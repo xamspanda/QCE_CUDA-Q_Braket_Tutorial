@@ -1,0 +1,11 @@
+boto3
+amazon-braket-sdk
+numpy
+numba
+pennylane
+pennylane-lightning
+amazon-braket-pennylane-plugin
+pyscf
+openfermion
+openfermionpyscf
+matplotlib

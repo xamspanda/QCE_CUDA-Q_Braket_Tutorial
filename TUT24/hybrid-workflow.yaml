@@ -1,0 +1,99 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: tbd
+
+Parameters:
+  BatchJobQueueArn:
+    Type: String
+
+  BatchJobDefinitionArn:
+    Type: String
+
+  DataBucket:
+    Type: String
+
+  LambdaFunctionImageUri:
+    Type: String
+
+Resources:
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code:
+        ImageUri: !Sub ${LambdaFunctionImageUri}:latest
+      Architectures:
+        - x86_64
+      MemorySize: 1024
+      Timeout: 900
+      Role: !ImportValue BraketBatchWorkflowLambdaRoleArn
+      Environment:
+        Variables:
+          DATA_BUCKET_NAME: !Ref DataBucket
+
+  HybridWorkflowOrchestration:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      RoleArn: !ImportValue BraketBatchWorkflowRoleArn
+      Definition:
+        QueryLanguage: JSONata
+        TimeoutSeconds: 3600
+        StartAt: BraketJob
+        States:
+          BraketJob:
+            Type: Task
+            Resource: arn:aws:states:::aws-sdk:braket:createJob.waitForTaskToken
+            Arguments:
+              AlgorithmSpecification:
+                ScriptModeConfig:
+                  EntryPoint: afqmc.collect_shadow:main
+                  S3Uri: !Sub s3://${DataBucket}/afqmc.tar.gz
+                  CompressionType: GZIP
+              ClientToken: "{% $states.context.Execution.Name %}"
+              DeviceConfig:
+                Device: local:pennylane/lightning.qubit
+              HyperParameters:
+                TaskToken: "{% $states.context.Task.Token %}"
+                ShadowSize: "4000"
+                Shots: "100"
+              InstanceConfig:
+                InstanceType: ml.m5.large
+                InstanceCount: 1
+                VolumeSizeInGb: 30
+              JobName: lab-3-afqmc-matchgate-circuits
+              RoleArn: !ImportValue BraketJobsExecutionRoleArn
+              OutputDataConfig:
+                S3Path: !Sub s3://${DataBucket}/braket/lab-3-qc-afqmc-matchgate-circuits
+            Next: BatchJob
+          BatchJob:
+            Type: Task
+            Resource: arn:aws:states:::batch:submitJob.sync
+            Arguments:
+              JobName: lab-3-afqmc-postprocessing
+              JobQueue: !Ref BatchJobQueueArn
+              JobDefinition: !Ref BatchJobDefinitionArn
+              ArrayProperties:
+                Size: 200
+              ContainerOverrides:
+                Environment:
+                  - Name: JOB_INPUT_FILE_KEY
+                    Value: braket/lab-3-qc-afqmc-matchgate-circuits/output/model.tar.gz
+                  - Name: JOB_ENTRY_POINT
+                    Value: run_qc_afqmc
+                  - Name: JOB_DTAU
+                    Value: "0.005"
+                  - Name: JOB_TIME_STEPS
+                    Value: "200"
+            Next: DataReduction
+          DataReduction:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Arguments:
+              FunctionName: !GetAtt LambdaFunction.Arn
+              Payload:
+                BatchJobId: "{% $states.input.JobId %}"
+                BatchJobArraySize: "{% $states.input.ArrayProperties.Size %}"
+            End: true
+
+Outputs:
+  StateMachineArn:
+    Value: !GetAtt HybridWorkflowOrchestration.Arn

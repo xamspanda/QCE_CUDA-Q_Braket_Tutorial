@@ -1,0 +1,6 @@
+# This file serves as the environment requirement for lab-2
+
+numba
+pyscf
+openfermion
+openfermionpyscf
